@@ -1,168 +1,142 @@
 
 name: Pella Android APK Builder
 
-run-name: "Pella Build ${{ inputs.build_id }}"
-
 on:
   workflow_dispatch:
     inputs:
       build_id:
-        description: Build ID
+        description: "Build ID"
         required: true
         type: string
       archive_branch:
-        description: Temporary archive branch
+        description: "Temporary archive branch"
         required: true
         type: string
       archive_path:
-        description: ZIP archive path
+        description: "ZIP archive path"
         required: true
         type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
+    name: Build APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - name: Validate inputs
-        run: |
-          [[ "${{ inputs.build_id }}" =~ ^[a-f0-9]{12}$ ]]
-          [[ "${{ inputs.archive_branch }}" == "pella-build-${{ inputs.build_id }}" ]]
-          [[ "${{ inputs.archive_path }}" == ".pella-builds/${{ inputs.build_id }}.zip" ]]
-
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          ref: main
 
-      - name: Download project ZIP
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Checkout Uploaded Android Project
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.archive_branch }}
+          path: uploaded_project
+          sparse-checkout: ${{ inputs.archive_path }}
+
+      - name: Extract Android Project
+        shell: bash
         run: |
-          mkdir -p incoming
-          BASIC=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
-          git -c http.extraheader="AUTHORIZATION: basic $BASIC" \
-            fetch --no-tags --depth=1 origin \
-            "refs/heads/${{ inputs.archive_branch }}"
-          git show "FETCH_HEAD:${{ inputs.archive_path }}" \
-            > "incoming/${{ inputs.build_id }}.zip"
-          unset GH_TOKEN BASIC
+          set -e
 
-      - name: Set up Java
+          ARCHIVE="uploaded_project/${{ inputs.archive_path }}"
+
+          if [ ! -f "$ARCHIVE" ]; then
+            echo "ERROR: Uploaded ZIP not found!"
+            exit 1
+          fi
+
+          mkdir -p android_project
+          unzip -q "$ARCHIVE" -d android_project
+
+          echo "ZIP extracted successfully."
+
+          find android_project -maxdepth 4 \
+            \( -name gradlew -o -name settings.gradle \
+            -o -name settings.gradle.kts \)
+
+      - name: Locate Android Project
+        id: project
+        shell: bash
+        run: |
+          set -e
+
+          GRADLEW=$(find android_project -name gradlew -type f | head -n 1)
+
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: gradlew not found in ZIP."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$GRADLEW")
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+          chmod +x "$GRADLEW"
+
+          echo "Android project: $PROJECT_DIR"
+
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
-      - name: Accept SDK licenses
-        run: yes | sdkmanager --licenses || true
-
-      - name: Extract project
+      - name: Build Debug APK
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
-          python3 - <<'PY'
-          import zipfile
-          from pathlib import Path, PurePosixPath
-          import stat
+          set -e
+          ./gradlew --no-daemon --stacktrace assembleDebug
 
-          archive = Path("incoming/${{ inputs.build_id }}.zip")
-          dest = Path("project").resolve()
-          dest.mkdir(exist_ok=True)
-
-          with zipfile.ZipFile(archive) as z:
-              total = 0
-              if len(z.infolist()) > 20000:
-                  raise SystemExit("Too many ZIP entries")
-
-              for i in z.infolist():
-                  name = i.filename.replace("\\", "/")
-                  p = PurePosixPath(name)
-                  mode = (i.external_attr >> 16) & 0xffff
-
-                  if p.is_absolute() or ".." in p.parts:
-                      raise SystemExit("Unsafe ZIP path")
-
-                  if stat.S_ISLNK(mode):
-                      raise SystemExit("Symlinks forbidden")
-
-                  total += i.file_size
-                  if total > 700 * 1024 * 1024:
-                      raise SystemExit("Archive too large")
-
-                  target = (dest / str(p)).resolve()
-                  if dest not in target.parents and target != dest:
-                      raise SystemExit("Path traversal")
-
-                  if i.is_dir():
-                      target.mkdir(parents=True, exist_ok=True)
-                  else:
-                      target.parent.mkdir(parents=True, exist_ok=True)
-                      with z.open(i) as src, target.open("wb") as out:
-                          while True:
-                              block = src.read(1024 * 1024)
-                              if not block:
-                                  break
-                              out.write(block)
-
-          roots = []
-          for settings in list(dest.rglob("settings.gradle")) + list(dest.rglob("settings.gradle.kts")):
-              root = settings.parent
-              if (root / "build.gradle").exists() or (root / "build.gradle.kts").exists():
-                  roots.append(root)
-
-          if not roots:
-              raise SystemExit("Gradle project root not found")
-
-          import re
-          valid = []
-          for root in roots:
-              for build in list(root.rglob("build.gradle")) + list(root.rglob("build.gradle.kts")):
-                  content = build.read_text(errors="ignore")
-                  if re.search(r"com\.android\.(application|library)|com\.android\.tools\.build:gradle", content):
-                      valid.append(root)
-                      break
-
-          if not valid:
-              raise SystemExit("Android Gradle plugin not found")
-
-          valid.sort(key=lambda p: len(p.parts))
-          Path("project-root.txt").write_text(str(valid[0]))
-          PY
-
-      - name: Gradle cache
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Build APK
+      - name: Find APK
+        id: apk
+        shell: bash
         run: |
-          ROOT=$(cat project-root.txt)
-          cd "$ROOT"
+          set -e
 
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-            ./gradlew --no-daemon assembleDebug
-          else
-            gradle --no-daemon assembleDebug
+          APK=$(find "${{ steps.project.outputs.dir }}" \
+            -type f -path "*/build/outputs/apk/*/*.apk" \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK file not generated!"
+            exit 1
           fi
 
-      - name: Collect APK
-        run: |
-          mkdir -p apk-output
-          ROOT=$(cat project-root.txt)
+          mkdir -p final_apk
+          cp "$APK" "final_apk/Pella-${{ inputs.build_id }}.apk"
 
-          find "$ROOT" -type f \
-            -path '*/build/outputs/apk/*/*.apk' \
-            -exec cp {} apk-output/ \;
+          echo "path=final_apk/Pella-${{ inputs.build_id }}.apk" \
+            >> "$GITHUB_OUTPUT"
 
-          test -n "$(find apk-output -name '*.apk' -print -quit)"
+          echo "APK generated successfully."
 
-      - name: Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ inputs.build_id }}
-          path: apk-output/*.apk
-          retention-days: 1
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Pella APK Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Build ID: ${{ inputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Status: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
