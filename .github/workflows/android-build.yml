@@ -1,0 +1,168 @@
+
+name: Pella Android APK Builder
+
+run-name: "Pella Build ${{ inputs.build_id }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: Build ID
+        required: true
+        type: string
+      archive_branch:
+        description: Temporary archive branch
+        required: true
+        type: string
+      archive_path:
+        description: ZIP archive path
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Validate inputs
+        run: |
+          [[ "${{ inputs.build_id }}" =~ ^[a-f0-9]{12}$ ]]
+          [[ "${{ inputs.archive_branch }}" == "pella-build-${{ inputs.build_id }}" ]]
+          [[ "${{ inputs.archive_path }}" == ".pella-builds/${{ inputs.build_id }}.zip" ]]
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download project ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p incoming
+          BASIC=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c http.extraheader="AUTHORIZATION: basic $BASIC" \
+            fetch --no-tags --depth=1 origin \
+            "refs/heads/${{ inputs.archive_branch }}"
+          git show "FETCH_HEAD:${{ inputs.archive_path }}" \
+            > "incoming/${{ inputs.build_id }}.zip"
+          unset GH_TOKEN BASIC
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Extract project
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path, PurePosixPath
+          import stat
+
+          archive = Path("incoming/${{ inputs.build_id }}.zip")
+          dest = Path("project").resolve()
+          dest.mkdir(exist_ok=True)
+
+          with zipfile.ZipFile(archive) as z:
+              total = 0
+              if len(z.infolist()) > 20000:
+                  raise SystemExit("Too many ZIP entries")
+
+              for i in z.infolist():
+                  name = i.filename.replace("\\", "/")
+                  p = PurePosixPath(name)
+                  mode = (i.external_attr >> 16) & 0xffff
+
+                  if p.is_absolute() or ".." in p.parts:
+                      raise SystemExit("Unsafe ZIP path")
+
+                  if stat.S_ISLNK(mode):
+                      raise SystemExit("Symlinks forbidden")
+
+                  total += i.file_size
+                  if total > 700 * 1024 * 1024:
+                      raise SystemExit("Archive too large")
+
+                  target = (dest / str(p)).resolve()
+                  if dest not in target.parents and target != dest:
+                      raise SystemExit("Path traversal")
+
+                  if i.is_dir():
+                      target.mkdir(parents=True, exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      with z.open(i) as src, target.open("wb") as out:
+                          while True:
+                              block = src.read(1024 * 1024)
+                              if not block:
+                                  break
+                              out.write(block)
+
+          roots = []
+          for settings in list(dest.rglob("settings.gradle")) + list(dest.rglob("settings.gradle.kts")):
+              root = settings.parent
+              if (root / "build.gradle").exists() or (root / "build.gradle.kts").exists():
+                  roots.append(root)
+
+          if not roots:
+              raise SystemExit("Gradle project root not found")
+
+          import re
+          valid = []
+          for root in roots:
+              for build in list(root.rglob("build.gradle")) + list(root.rglob("build.gradle.kts")):
+                  content = build.read_text(errors="ignore")
+                  if re.search(r"com\.android\.(application|library)|com\.android\.tools\.build:gradle", content):
+                      valid.append(root)
+                      break
+
+          if not valid:
+              raise SystemExit("Android Gradle plugin not found")
+
+          valid.sort(key=lambda p: len(p.parts))
+          Path("project-root.txt").write_text(str(valid[0]))
+          PY
+
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK
+        run: |
+          ROOT=$(cat project-root.txt)
+          cd "$ROOT"
+
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew --no-daemon assembleDebug
+          else
+            gradle --no-daemon assembleDebug
+          fi
+
+      - name: Collect APK
+        run: |
+          mkdir -p apk-output
+          ROOT=$(cat project-root.txt)
+
+          find "$ROOT" -type f \
+            -path '*/build/outputs/apk/*/*.apk' \
+            -exec cp {} apk-output/ \;
+
+          test -n "$(find apk-output -name '*.apk' -print -quit)"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ inputs.build_id }}
+          path: apk-output/*.apk
+          retention-days: 1
