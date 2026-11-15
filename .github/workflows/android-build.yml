@@ -28,12 +28,12 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Main Repository
         uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: Checkout Uploaded Android Project
+      - name: Download Uploaded ZIP
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.archive_branch }}
@@ -48,7 +48,7 @@ jobs:
           ARCHIVE="uploaded_project/${{ inputs.archive_path }}"
 
           if [ ! -f "$ARCHIVE" ]; then
-            echo "ERROR: Uploaded ZIP not found!"
+            echo "ERROR: ZIP archive not found!"
             exit 1
           fi
 
@@ -56,73 +56,89 @@ jobs:
           unzip -q "$ARCHIVE" -d android_project
 
           echo "ZIP extracted successfully."
+          find android_project -maxdepth 3 -type f | head -50
 
-          find android_project -maxdepth 4 \
-            \( -name gradlew -o -name settings.gradle \
-            -o -name settings.gradle.kts \)
-
-      - name: Locate Android Project
+      - name: Locate Gradle Project
         id: project
         shell: bash
         run: |
           set -e
 
-          GRADLEW=$(find android_project -name gradlew -type f | head -n 1)
+          SETTINGS=$(find android_project -type f \
+            \( -name settings.gradle \
+            -o -name settings.gradle.kts \) \
+            | head -n 1)
 
-          if [ -z "$GRADLEW" ]; then
-            echo "ERROR: gradlew not found in ZIP."
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: settings.gradle not found!"
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$GRADLEW")
+          PROJECT_DIR=$(dirname "$SETTINGS")
 
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-          chmod +x "$GRADLEW"
+          echo "Project directory: $PROJECT_DIR"
 
-          echo "Android project: $PROJECT_DIR"
-
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools'
+          packages: |
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
+
+      - name: Install Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
 
       - name: Build Debug APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -e
-          ./gradlew --no-daemon --stacktrace assembleDebug
 
-      - name: Find APK
+          echo "Starting Android APK build..."
+
+          gradle --version
+
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            assembleDebug
+
+      - name: Find Generated APK
         id: apk
         shell: bash
         run: |
           set -e
 
           APK=$(find "${{ steps.project.outputs.dir }}" \
-            -type f -path "*/build/outputs/apk/*/*.apk" \
+            -type f \
+            -path "*/build/outputs/apk/*/*.apk" \
             | head -n 1)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK file not generated!"
+            echo "ERROR: APK not generated!"
             exit 1
           fi
 
           mkdir -p final_apk
-          cp "$APK" "final_apk/Pella-${{ inputs.build_id }}.apk"
+
+          cp "$APK" \
+            "final_apk/Pella-${{ inputs.build_id }}.apk"
 
           echo "path=final_apk/Pella-${{ inputs.build_id }}.apk" \
             >> "$GITHUB_OUTPUT"
 
-          echo "APK generated successfully."
+          echo "APK successfully generated!"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -134,7 +150,6 @@ jobs:
 
       - name: Build Summary
         if: always()
-        shell: bash
         run: |
           echo "## Pella APK Build" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
