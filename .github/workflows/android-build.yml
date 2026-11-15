@@ -33,7 +33,7 @@ jobs:
         with:
           ref: main
 
-      - name: Download Uploaded ZIP
+      - name: Checkout Uploaded ZIP
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.archive_branch }}
@@ -48,7 +48,7 @@ jobs:
           ARCHIVE="uploaded_project/${{ inputs.archive_path }}"
 
           if [ ! -f "$ARCHIVE" ]; then
-            echo "ERROR: ZIP archive not found!"
+            echo "ERROR: Uploaded ZIP not found!"
             exit 1
           fi
 
@@ -56,7 +56,6 @@ jobs:
           unzip -q "$ARCHIVE" -d android_project
 
           echo "ZIP extracted successfully."
-          find android_project -maxdepth 3 -type f | head -50
 
       - name: Locate Gradle Project
         id: project
@@ -71,10 +70,23 @@ jobs:
 
           if [ -z "$SETTINGS" ]; then
             echo "ERROR: settings.gradle not found!"
+            find android_project -maxdepth 4 -type f
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
+
+          if [ ! -f "$PROJECT_DIR/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
+            echo "ERROR: Root build.gradle not found!"
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: App build.gradle not found!"
+            exit 1
+          fi
 
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
@@ -88,16 +100,46 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
-        with:
-          packages: |
-            platform-tools
-            platforms;android-35
-            build-tools;35.0.0
+
+      - name: Accept Android SDK Licenses
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK Packages
+        shell: bash
+        run: |
+          set -e
+
+          sdkmanager --install "platform-tools"
+
+          sdkmanager --install "platforms;android-35"
+
+          sdkmanager --install "build-tools;35.0.0"
+
+          echo "Android SDK packages installed."
 
       - name: Install Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
+        shell: bash
+        run: |
+          set -e
+
+          curl -fsSL \
+            https://services.gradle.org/distributions/gradle-8.9-bin.zip \
+            -o /tmp/gradle-8.9-bin.zip
+
+          unzip -q /tmp/gradle-8.9-bin.zip -d /opt
+
+          echo "/opt/gradle-8.9/bin" >> "$GITHUB_PATH"
+
+          echo "Gradle 8.9 installed."
+
+      - name: Verify Build Environment
+        shell: bash
+        run: |
+          java -version
+          gradle --version
+          sdkmanager --list_installed
 
       - name: Build Debug APK
         working-directory: ${{ steps.project.outputs.dir }}
@@ -105,9 +147,7 @@ jobs:
         run: |
           set -e
 
-          echo "Starting Android APK build..."
-
-          gradle --version
+          echo "Starting APK build..."
 
           gradle \
             --no-daemon \
@@ -138,7 +178,7 @@ jobs:
           echo "path=final_apk/Pella-${{ inputs.build_id }}.apk" \
             >> "$GITHUB_OUTPUT"
 
-          echo "APK successfully generated!"
+          echo "APK generated successfully!"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -150,8 +190,9 @@ jobs:
 
       - name: Build Summary
         if: always()
+        shell: bash
         run: |
-          echo "## Pella APK Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Pella Android APK Builder" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Build ID: ${{ inputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Status: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
