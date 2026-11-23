@@ -1,65 +1,107 @@
 name: Build SHAHIL APK
 
+run-name: APK build ${{ inputs.build_id }}
+
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      build_id:
+        description: "Unique build ID supplied by the Telegram bot"
+        required: true
+        type: string
+      archive_branch:
+        description: "Temporary branch containing the uploaded project ZIP"
+        required: true
+        type: string
+      archive_path:
+        description: "Path to the uploaded project ZIP in that branch"
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-20.04        # 20.04 — Python 3.8 নেটিভ, সবচেয়ে stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.archive_branch }}
+          persist-credentials: false
 
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Verify and extract uploaded project
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="${{ inputs.archive_path }}"
+          if [ ! -f "$ARCHIVE" ]; then
+            echo "::error::Project ZIP not found: $ARCHIVE"
+            exit 1
+          fi
+          mkdir -p project-source
+          unzip -q "$ARCHIVE" -d project-source
 
-    # ── Python 3.8 (Chaquopy এর জন্য) ──────────────────
-    - name: Set up Python 3.8
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.8'
+          # Locate the actual Gradle project root (supports ZIPs with or without
+          # one enclosing top-level directory).
+          PROJECT_FILE="$(find project-source -type f \( \
+            -name settings.gradle -o -name settings.gradle.kts \
+          \) -print -quit)"
+          if [ -z "$PROJECT_FILE" ]; then
+            PROJECT_FILE="$(find project-source -type f \( \
+              -name build.gradle -o -name build.gradle.kts \
+            \) -print -quit)"
+          fi
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "::error::No Gradle Android project found in uploaded ZIP."
+            exit 1
+          fi
 
-    - name: Upgrade pip + install six
-      run: |
-        python3 -m pip install --upgrade pip setuptools wheel six
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Detected Gradle project: $PROJECT_DIR"
 
-    # ── Java ────────────────────────────────────────────
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
 
-    # ── Android SDK ─────────────────────────────────────
-    - name: Set up Android SDK
-      uses: android-actions/setup-android@v3
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-    - name: Accept SDK licenses
-      run: yes | sdkmanager --licenses || true
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
 
-    - name: Install build tools
-      run: |
-        sdkmanager "build-tools;33.0.1" "platforms;android-34" "ndk;25.2.9519653"
+      - name: Configure Android SDK
+        shell: bash
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$PROJECT_DIR/local.properties"
 
-    # ── local.properties ────────────────────────────────
-    - name: Write local.properties
-      run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.1.1'
 
-    # ── Gradle ──────────────────────────────────────────
-    - name: Set up Gradle
-      uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: '8.1.1'
+      - name: Build debug APK
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
 
-    # ── BUILD ───────────────────────────────────────────
-    - name: Build debug APK
-      run: gradle assembleDebug --no-daemon --stacktrace
-
-    # ── Upload ──────────────────────────────────────────
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: SHAHIL-FF-Monitor
-        path: app/build/outputs/apk/debug/*.apk
-        retention-days: 30
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ inputs.build_id }}
+          path: ${{ env.PROJECT_DIR }}/**/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
