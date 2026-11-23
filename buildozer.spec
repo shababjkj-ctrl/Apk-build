@@ -1,4 +1,5 @@
 [app]
+android.accept_sdk_license = True
 title = SHAHIL FF Monitor
 package.name = ffmonitor
 package.domain = com.shahil

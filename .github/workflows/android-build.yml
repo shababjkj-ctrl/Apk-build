@@ -30,11 +30,6 @@ jobs:
         run: |
           pip3 install --upgrade buildozer cython==0.29.37
 
-      - name: Copy Android SDK licenses
-        run: |
-          mkdir -p "$HOME/.buildozer/android/platform/android-sdk/licenses"
-          cp -a "$ANDROID_HOME/licenses/." "$HOME/.buildozer/android/platform/android-sdk/licenses/"
-
       - name: Build APK
         run: |
           buildozer -v android debug
