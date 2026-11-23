@@ -1,0 +1,41 @@
+
+name: Build SHAHIL APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-pip python3-setuptools \
+            build-essential git zip unzip \
+            libffi-dev libssl-dev \
+            openjdk-17-jdk \
+            autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev \
+            libncursesw5-dev cmake \
+            libltdl-dev autopoint gettext
+
+      - name: Install Buildozer
+        run: |
+          pip3 install --upgrade buildozer cython==0.29.37
+
+      - name: Build APK
+        run: |
+          buildozer -v android debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SHAHIL-FF-Monitor
+          path: bin/*.apk
