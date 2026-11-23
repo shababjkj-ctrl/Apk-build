@@ -32,6 +32,30 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install buildozer cython==0.29.37
 
+      - name: Prepare patched python-for-android
+        run: |
+          git clone https://github.com/kivy/python-for-android.git p4a
+          git -C p4a checkout d2ee8c5
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          p = Path("p4a/pythonforandroid/recipes/libthorvg/__init__.py")
+          s = p.read_text()
+          old = '''pattern = join(self.ctx.ndk.llvm_prebuilt_dir, "lib/clang/*/lib/linux", lib_arch)
+            clang_lib_dir = glob(pattern)[0]'''
+          new = '''patterns = [
+                join(self.ctx.ndk.llvm_prebuilt_dir, "lib/clang/*/lib/linux", lib_arch),
+                join(self.ctx.ndk.llvm_prebuilt_dir, "lib64/clang/*/lib/linux", lib_arch),
+            ]
+            matches = [path for pattern in patterns for path in glob(pattern)]
+            if not matches:
+                raise RuntimeError("NDK Clang runtime library directory not found: " + str(patterns))
+            clang_lib_dir = matches[0]'''
+          if old not in s:
+              raise SystemExit("Expected libthorvg code not found; stopping safely.")
+          p.write_text(s.replace(old, new, 1))
+          print("libthorvg NDK path fix applied")
+          PYCODE
+
       - name: Build APK
         shell: bash
         run: |

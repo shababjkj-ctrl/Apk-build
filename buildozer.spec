@@ -28,6 +28,7 @@ android.allow_backup = True
 android.accept_sdk_license = True
 p4a.branch = develop
 p4a.commit = d2ee8c5
+p4a.source_dir = p4a
 
 
 [buildozer]
