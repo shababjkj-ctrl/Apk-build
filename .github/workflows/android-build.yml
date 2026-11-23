@@ -1,198 +1,65 @@
-
-name: Pella Android APK Builder
+name: Build SHAHIL APK
 
 on:
+  push:
+    branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      build_id:
-        description: "Build ID"
-        required: true
-        type: string
-      archive_branch:
-        description: "Temporary archive branch"
-        required: true
-        type: string
-      archive_path:
-        description: "ZIP archive path"
-        required: true
-        type: string
-
-permissions:
-  contents: read
-  actions: read
 
 jobs:
   build:
-    name: Build APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-20.04        # 20.04 — Python 3.8 নেটিভ, সবচেয়ে stable
 
     steps:
-      - name: Checkout Main Repository
-        uses: actions/checkout@v4
-        with:
-          ref: main
 
-      - name: Checkout Uploaded ZIP
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.archive_branch }}
-          path: uploaded_project
-          sparse-checkout: ${{ inputs.archive_path }}
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Extract Android Project
-        shell: bash
-        run: |
-          set -e
+    # ── Python 3.8 (Chaquopy এর জন্য) ──────────────────
+    - name: Set up Python 3.8
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.8'
 
-          ARCHIVE="uploaded_project/${{ inputs.archive_path }}"
+    - name: Upgrade pip + install six
+      run: |
+        python3 -m pip install --upgrade pip setuptools wheel six
 
-          if [ ! -f "$ARCHIVE" ]; then
-            echo "ERROR: Uploaded ZIP not found!"
-            exit 1
-          fi
+    # ── Java ────────────────────────────────────────────
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
 
-          mkdir -p android_project
-          unzip -q "$ARCHIVE" -d android_project
+    # ── Android SDK ─────────────────────────────────────
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v3
 
-          echo "ZIP extracted successfully."
+    - name: Accept SDK licenses
+      run: yes | sdkmanager --licenses || true
 
-      - name: Locate Gradle Project
-        id: project
-        shell: bash
-        run: |
-          set -e
+    - name: Install build tools
+      run: |
+        sdkmanager "build-tools;33.0.1" "platforms;android-34" "ndk;25.2.9519653"
 
-          SETTINGS=$(find android_project -type f \
-            \( -name settings.gradle \
-            -o -name settings.gradle.kts \) \
-            | head -n 1)
+    # ── local.properties ────────────────────────────────
+    - name: Write local.properties
+      run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-          if [ -z "$SETTINGS" ]; then
-            echo "ERROR: settings.gradle not found!"
-            find android_project -maxdepth 4 -type f
-            exit 1
-          fi
+    # ── Gradle ──────────────────────────────────────────
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.1.1'
 
-          PROJECT_DIR=$(dirname "$SETTINGS")
+    # ── BUILD ───────────────────────────────────────────
+    - name: Build debug APK
+      run: gradle assembleDebug --no-daemon --stacktrace
 
-          if [ ! -f "$PROJECT_DIR/build.gradle" ] && \
-             [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
-            echo "ERROR: Root build.gradle not found!"
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
-             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "ERROR: App build.gradle not found!"
-            exit 1
-          fi
-
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-
-          echo "Project directory: $PROJECT_DIR"
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-
-      - name: Accept Android SDK Licenses
-        shell: bash
-        run: |
-          yes | sdkmanager --licenses || true
-
-      - name: Install Android SDK Packages
-        shell: bash
-        run: |
-          set -e
-
-          sdkmanager --install "platform-tools"
-
-          sdkmanager --install "platforms;android-35"
-
-          sdkmanager --install "build-tools;35.0.0"
-
-          echo "Android SDK packages installed."
-
-      - name: Install Gradle 8.9
-        shell: bash
-        run: |
-          set -e
-
-          curl -fsSL \
-            https://services.gradle.org/distributions/gradle-8.9-bin.zip \
-            -o /tmp/gradle-8.9-bin.zip
-
-          unzip -q /tmp/gradle-8.9-bin.zip -d /opt
-
-          echo "/opt/gradle-8.9/bin" >> "$GITHUB_PATH"
-
-          echo "Gradle 8.9 installed."
-
-      - name: Verify Build Environment
-        shell: bash
-        run: |
-          java -version
-          gradle --version
-          sdkmanager --list_installed
-
-      - name: Build Debug APK
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
-        run: |
-          set -e
-
-          echo "Starting APK build..."
-
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            assembleDebug
-
-      - name: Find Generated APK
-        id: apk
-        shell: bash
-        run: |
-          set -e
-
-          APK=$(find "${{ steps.project.outputs.dir }}" \
-            -type f \
-            -path "*/build/outputs/apk/*/*.apk" \
-            | head -n 1)
-
-          if [ -z "$APK" ]; then
-            echo "ERROR: APK not generated!"
-            exit 1
-          fi
-
-          mkdir -p final_apk
-
-          cp "$APK" \
-            "final_apk/Pella-${{ inputs.build_id }}.apk"
-
-          echo "path=final_apk/Pella-${{ inputs.build_id }}.apk" \
-            >> "$GITHUB_OUTPUT"
-
-          echo "APK generated successfully!"
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: apk-${{ inputs.build_id }}
-          path: ${{ steps.apk.outputs.path }}
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Build Summary
-        if: always()
-        shell: bash
-        run: |
-          echo "## Pella Android APK Builder" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Build ID: ${{ inputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "Status: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+    # ── Upload ──────────────────────────────────────────
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: SHAHIL-FF-Monitor
+        path: app/build/outputs/apk/debug/*.apk
+        retention-days: 30
