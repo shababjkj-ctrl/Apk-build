@@ -9,7 +9,7 @@ source.include_patterns = udpcapture_1.py
 
 version = 1.0.0
 
-requirements = python3,kivy==2.3.0,pycryptodome,requests,urllib3
+requirements = python3,kivy==2.3.2,pycryptodome,requests,urllib3
 
 orientation = portrait
 
