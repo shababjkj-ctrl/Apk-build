@@ -28,13 +28,12 @@ jobs:
 
       - name: Setup Python environment
         run: |
-          python3 -m venv .venv
-          .venv/bin/pip install --upgrade pip setuptools wheel
-          .venv/bin/pip install buildozer cython==0.29.37
+          python3 -m pip install --user --upgrade pip setuptools wheel
+          python3 -m pip install --user buildozer cython==0.29.37
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build APK
         run: |
-          export PATH="$PWD/.venv/bin:$PATH"
           cython --version
           buildozer -v android debug
 
