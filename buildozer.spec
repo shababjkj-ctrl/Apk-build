@@ -1,0 +1,32 @@
+[app]
+title = SHAHIL FF Monitor
+package.name = ffmonitor
+package.domain = com.shahil
+
+source.dir = .
+source.include_exts = py,png,jpg,kv,atlas,json
+source.include_patterns = udpcapture_1.py
+
+version = 1.0.0
+
+requirements = python3,kivy==2.3.0,pycryptodome,requests,urllib3
+
+orientation = portrait
+
+# Android permissions
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,CHANGE_WIFI_STATE,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,FOREGROUND_SERVICE
+
+android.minapi = 24
+android.api = 33
+android.ndk = 25c
+android.ndk_api = 24
+
+android.archs = arm64-v8a, armeabi-v7a
+
+android.allow_backup = True
+
+# FileProvider for sharing
+
+[buildozer]
+log_level = 2
+warn_on_root = 1

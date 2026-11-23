@@ -1,0 +1,44 @@
+name: Build SHAHIL APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip \
+            openjdk-17-jdk \
+            python3-pip python3-venv \
+            build-essential \
+            autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev \
+            libffi-dev libssl-dev \
+            cmake libltdl-dev
+
+      - name: Setup Python environment
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip setuptools wheel
+          .venv/bin/pip install buildozer cython==0.29.37
+
+      - name: Build APK
+        run: |
+          .venv/bin/buildozer -v android debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SHAHIL-FF-Monitor
+          path: bin/*.apk
+          if-no-files-found: error
