@@ -1,4 +1,3 @@
-
 name: Build SHAHIL APK
 
 run-name: APK build ${{ inputs.build_id }}
@@ -7,15 +6,15 @@ on:
   workflow_dispatch:
     inputs:
       build_id:
-        description: Build ID
+        description: "Unique build ID from Telegram bot"
         required: true
         type: string
       archive_branch:
-        description: Archive branch
+        description: "Temporary branch containing the uploaded project ZIP"
         required: true
         type: string
       archive_path:
-        description: ZIP path
+        description: "Path to the uploaded ZIP in that branch"
         required: true
         type: string
 
@@ -24,73 +23,80 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
-      - name: Checkout uploaded archive
+      - name: Checkout uploaded archive branch
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.archive_branch }}
+          persist-credentials: false
 
-      - name: Extract Android project
+      - name: Verify and extract Android project ZIP
         shell: bash
         run: |
           set -euo pipefail
 
           ARCHIVE="${{ inputs.archive_path }}"
-
-          test -f "$ARCHIVE" || {
-            echo "::error::ZIP file not found"
+          if [ ! -f "$ARCHIVE" ]; then
+            echo "::error::ZIP not found: $ARCHIVE"
             exit 1
-          }
+          fi
 
           mkdir -p extracted-project
           unzip -q "$ARCHIVE" -d extracted-project
 
-          SETTINGS=$(find extracted-project -type f \
-            \( -name settings.gradle -o -name settings.gradle.kts \) \
-            -print -quit)
-
-          if [ -z "$SETTINGS" ]; then
-            echo "::error::Gradle settings file not found"
+          SETTINGS_FILE="$(find extracted-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::Gradle settings.gradle file not found in ZIP."
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$SETTINGS")
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "::error::Android app module not found under $PROJECT_DIR"
+            exit 1
+          fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project root: $PROJECT_DIR"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
           java-version: '17'
+          distribution: temurin
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
+          packages: 'platform-tools,platforms;android-34,build-tools;34.0.0'
 
       - name: Configure Android SDK
+        shell: bash
         run: |
-          echo "sdk.dir=$ANDROID_SDK_ROOT" \
-            > "$PROJECT_DIR/local.properties"
+          set -euo pipefail
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$PROJECT_DIR/local.properties"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.1.1'
 
-      - name: Build Debug APK
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: gradle assembleDebug --stacktrace
+      - name: Show build environment
+        shell: bash
+        run: |
+          java -version
+          gradle --version
+          echo "Android SDK: $ANDROID_SDK_ROOT"
 
-      - name: Upload APK
+      - name: Build debug APK
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ inputs.build_id }}
