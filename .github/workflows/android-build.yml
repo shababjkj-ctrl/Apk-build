@@ -1,20 +1,23 @@
+
 name: Build SHAHIL APK
 
-run-name: APK build ${{ inputs.build_id }}
+run-name: APK Build ${{ inputs.build_id }}
 
 on:
   workflow_dispatch:
     inputs:
       build_id:
-        description: "Unique build ID supplied by the Telegram bot"
+        description: "Unique build ID"
         required: true
         type: string
+
       archive_branch:
-        description: "Temporary branch containing the uploaded project ZIP"
+        description: "Temporary branch containing uploaded ZIP"
         required: true
         type: string
+
       archive_path:
-        description: "Path to the uploaded project ZIP in that branch"
+        description: "Path of uploaded ZIP file"
         required: true
         type: string
 
@@ -23,85 +26,113 @@ permissions:
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 45
 
     steps:
-      - name: Checkout build branch
+      - name: Checkout uploaded archive branch
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.archive_branch }}
-          persist-credentials: false
 
-      - name: Verify and extract uploaded project
+      - name: Extract Android project ZIP
+        shell: bash
+        env:
+          ARCHIVE_PATH: ${{ inputs.archive_path }}
+        run: |
+          set -e
+
+          if [ ! -f "$ARCHIVE_PATH" ]; then
+            echo "ERROR: Uploaded ZIP not found!"
+            exit 1
+          fi
+
+          mkdir -p extracted-project
+
+          unzip -q "$ARCHIVE_PATH" -d extracted-project
+
+          echo "ZIP extracted successfully."
+
+      - name: Locate Android project
         shell: bash
         run: |
-          set -euo pipefail
-          ARCHIVE="${{ inputs.archive_path }}"
-          if [ ! -f "$ARCHIVE" ]; then
-            echo "::error::Project ZIP not found: $ARCHIVE"
-            exit 1
-          fi
-          mkdir -p project-source
-          unzip -q "$ARCHIVE" -d project-source
+          set -e
 
-          # Locate the actual Gradle project root (supports ZIPs with or without
-          # one enclosing top-level directory).
-          PROJECT_FILE="$(find project-source -type f \( \
-            -name settings.gradle -o -name settings.gradle.kts \
-          \) -print -quit)"
-          if [ -z "$PROJECT_FILE" ]; then
-            PROJECT_FILE="$(find project-source -type f \( \
-              -name build.gradle -o -name build.gradle.kts \
-            \) -print -quit)"
-          fi
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "::error::No Gradle Android project found in uploaded ZIP."
+          SETTINGS_FILE=$(find extracted-project -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            -print -quit)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle not found!"
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: Android app module not found!"
+            exit 1
+          fi
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Detected Gradle project: $PROJECT_DIR"
+
+          echo "Android project found: $PROJECT_DIR"
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Fix pip for Chaquopy
+        run: |
+          python3.8 -m pip install --upgrade \
+            "pip<21.0" six setuptools wheel
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: temurin
+          java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
 
       - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses || true
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.1.1"
 
       - name: Configure Android SDK
         shell: bash
         run: |
-          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$PROJECT_DIR/local.properties"
+          echo "sdk.dir=$ANDROID_SDK_ROOT" \
+            > "$PROJECT_DIR/local.properties"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.1.1'
-
-      - name: Build debug APK
+      - name: Build Debug APK
         shell: bash
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euo pipefail
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew assembleDebug --stacktrace
-          else
-            gradle assembleDebug --stacktrace
-          fi
+          set -e
 
-      - name: Upload APK artifact
+          cd "$PROJECT_DIR"
+
+          echo "Starting Gradle build..."
+
+          gradle assembleDebug --stacktrace
+
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ inputs.build_id }}
-          path: ${{ env.PROJECT_DIR }}/**/build/outputs/apk/debug/*.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
