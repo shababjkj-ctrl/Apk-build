@@ -1,8 +1,7 @@
 [app]
-android.accept_sdk_license = True
 title = SHAHIL FF Monitor
-package.name = ffmonitor
-package.domain = com.shahil
+package.name = shahil_ffmonitor
+package.domain = com.shahil.ffmonitor
 
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
@@ -19,14 +18,15 @@ android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,CHANGE_WIF
 
 android.minapi = 24
 android.api = 33
+android.sdk = 33
 android.ndk = 25c
 android.ndk_api = 24
 
 android.archs = arm64-v8a, armeabi-v7a
 
 android.allow_backup = True
+android.accept_sdk_license = True
 
-# FileProvider for sharing
 
 [buildozer]
 log_level = 2
